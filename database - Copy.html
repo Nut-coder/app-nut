@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Secure WFP Portal</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.8/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.datatables.net/v/dt/dt-2.3.8/datatables.min.css">
+    <style>
+        body { background-color: #f4f6f9; padding: 20px; font-family: sans-serif; }
+        .card-box { padding: 30px; background: #fff; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        #loginWrapper { max-width: 400px; margin: 100px auto; }
+        #dashboardWrapper { display: none; }
+        .filter-panel { background: #e9ecef; padding: 15px; border-radius: 6px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+    <!-- ১. লগইন ইন্টারফেস ಪ্যানেল -->
+    <div id="loginWrapper" class="card-box">
+        <h3 class="text-center mb-4">WFP Registry Secure Portal</h3>
+        <div id="loginError" class="alert alert-danger d-none">Invalid Username or Password Key!</div>
+        <form id="loginForm">
+            <div class="mb-3">
+                <label class="form-label">Username</label>
+                <input type="text" id="username" class="form-control" required autocomplete="off">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Password Key</label>
+                <input type="password" id="password" class="form-control" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Login to System</button>
+        </form>
+    </div>
+
+    <!-- ২. মূল ড্যাশবোর্ড ইন্টারফেস -->
+    <div id="dashboardWrapper" class="container-fluid card-box">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h2>WFP NSEP Beneficiary Registry <small class="text-muted" style="font-size: 14px;">(Target Date: 31/05/2026)</small></h2>
+                <p class="text-secondary mb-0">Role: <strong id="scopeLabel"></strong></p>
+            </div>
+            <div>
+                <span class="badge bg-secondary me-2" id="userLabel"></span>
+                <button class="btn btn-sm btn-danger" onclick="window.location.reload();">Log Out</button>
+            </div>
+        </div>
+
+        <div class="filter-panel row g-3 align-items-center">
+            <div class="col-auto">
+                <label class="form-label-sm fw-bold">Camp:</label>
+                <select id="campFilter" class="form-select form-select-sm" onchange="processAndDisplayData();"></select>
+            </div>
+            <div class="col-auto">
+                <label class="form-label-sm fw-bold">Block:</label>
+                <select id="blockFilter" class="form-select form-select-sm" onchange="processAndDisplayData();"></select>
+            </div>
+        </div>
+
+        <table id="recordsTable" class="table table-striped table-bordered w-100">
+            <thead>
+                <tr>
+                    <th colspan="3">Case ID</th>
+                    <th>Progress Status</th>
+                    <th>Age (as of 31/05/2026)</th>
+                    <th>Full Name</th>
+                    <th>FCN Number</th>
+                    <th>Camp Location</th>
+                    <th>Specific Block</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
+    </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+<script src="https://cdn.datatables.net/2.3.8/js/dataTables.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/datatables-buttons/3.2.5/js/dataTables.buttons.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.12/pdfmake.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.12/vfs_fonts.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/datatables-buttons/3.2.5/js/buttons.html5.min.js"></script>
+
+<script src="rn/database.js"></script>
+<script src="rn/users.js"></script>
+
+<script>
+let decryptedDataset = [];
+let activeUserConfig = null;
+let datatableInstance = null;
+
+const MASTER_KEY = "WFP_INTERNAL_CORE_SECRET_2026"; 
+const TARGET_DATE = new Date(2026, 5, 31); 
+
+function calculateTargetAge(birthdateString) {
+    if (!birthdateString) return "N/A";
+    let birthDate = new Date(birthdateString);
+    if (isNaN(birthDate)) return "N/A";
+    let age = TARGET_DATE.getFullYear() - birthDate.getFullYear();
+    let m = TARGET_DATE.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && TARGET_DATE.getDate() < birthDate.getDate())) { age--; }
+    return age;
+}
+
+$('#loginForm').on('submit', function(e) {
+    e.preventDefault();
+    let inputUser = $('#username').val().trim();
+    let inputPass = $('#password').val();
+    
+    try {
+        let userBytes = CryptoJS.AES.decrypt(ENCRYPTED_USERS, MASTER_KEY);
+        let decryptedUsersText = userBytes.toString(CryptoJS.enc.Utf8);
+        let userProfilesMap = JSON.parse(decryptedUsersText);
+        
+        if (userProfilesMap[inputUser] && userProfilesMap[inputUser].password === inputPass) {
+            activeUserConfig = userProfilesMap[inputUser];
+            
+            let dataBytes = CryptoJS.AES.decrypt(ENCRYPTED_DATABASE, MASTER_KEY);
+            let decryptedDataText = dataBytes.toString(CryptoJS.enc.Utf8);
+            decryptedDataset = JSON.parse(decryptedDataText);
+            
+            $('#loginWrapper').hide();
+            $('#dashboardWrapper').show();
+            setupInterfaceControls(inputUser);
+        } else {
+            throw new Error();
+        }
+    } catch(err) {
+        $('#loginError').removeClass('d-none');
+    }
+});
+
+function setupInterfaceControls(username) {
+    $('#userLabel').text("User: " + username);
+    
+    let scopeDisplay = "Custom Access Scope";
+    if (!activeUserConfig.camps) scopeDisplay = "All Camps";
+    else if (activeUserConfig.camps.length === 1) scopeDisplay = activeUserConfig.camps[0];
+    else scopeDisplay = `Multiple Camps (${activeUserConfig.camps.length})`;
+    
+    $('#scopeLabel').text(scopeDisplay + " / " + (activeUserConfig.block || "All Blocks"));
+
+    let campSelect = $('#campFilter');
+    campSelect.empty();
+    
+    // ক্যাম্প ড্রপডাউন পপুলেট করার রুলস
+    if (activeUserConfig.camps) {
+        // যদি নির্দিষ্ট একটি বা একাধিক ক্যাম্প অ্যাসাইন করা থাকে
+        if (activeUserConfig.camps.length > 1) {
+            campSelect.append('<option value="All">-- Allowed Camps --</option>');
+        }
+        activeUserConfig.camps.sort().forEach(c => {
+            campSelect.append(`<option value="${c}">${c}</option>`);
+        });
+    } else {
+        // অ্যাডমিনদের জন্য সব ক্যাম্প অপশন ওপেন থাকবে
+        let allCamps = [...new Set(decryptedDataset.map(item => item.Camp))].sort();
+        campSelect.append('<option value="All">-- All Camps --</option>');
+        allCamps.forEach(c => campSelect.append(`<option value="${c}">${c}</option>`));
+    }
+
+    updateBlockDropdownOptions();
+    processAndDisplayData();
+}
+
+function updateBlockDropdownOptions() {
+    let currentCamp = $('#campFilter').val();
+    let blockSelect = $('#blockFilter');
+    blockSelect.empty();
+
+    if (activeUserConfig.block) {
+        blockSelect.append(`<option value="${activeUserConfig.block}">${activeUserConfig.block}</option>`).prop('disabled', true);
+        return;
+    }
+
+    blockSelect.append('<option value="All">-- All Blocks --</option>');
+    
+    let filteredRows = decryptedDataset;
+    
+    // ক্যাম্প ফিল্টারের ওপর ভিত্তি করে ব্লকের তালিকা রেস্ট্রিক্ট করা
+    if (currentCamp !== "All") {
+        filteredRows = filteredRows.filter(item => item.Camp === currentCamp);
+    } else if (activeUserConfig.camps) {
+        filteredRows = filteredRows.filter(item => activeUserConfig.camps.includes(item.Camp));
+    }
+    
+    let blocks = [...new Set(filteredRows.map(item => item.Block))].sort();
+    blocks.forEach(b => blockSelect.append(`<option value="${b}">${b}</option>`));
+}
+
+function processAndDisplayData() {
+    let selectedCamp = $('#campFilter').val();
+    if (!activeUserConfig.block && event && event.target.id === 'campFilter') { updateBlockDropdownOptions(); }
+    let selectedBlock = $('#blockFilter').val();
+    let tableBody = $('#tableBody');
+    
+    if (datatableInstance) { datatableInstance.destroy(); }
+    tableBody.empty();
+
+    let displayRows = decryptedDataset.filter(row => {
+        // ১. ইউজার প্রোফাইলের ক্যাম্প পারমিশন ভ্যালিডেশন
+        if (activeUserConfig.camps && !activeUserConfig.camps.includes(row.Camp)) return false;
+        
+        // ২. ইন্টারফেস ড্রপডাউন ফিল্টারিং
+        if (selectedCamp !== "All" && row.Camp !== selectedCamp) return false;
+        if (selectedBlock !== "All" && row.Block !== selectedBlock) return false;
+        return true;
+    });
+
+    displayRows.forEach(row => {
+        tableBody.append(`
+            <tr>
+                <td>${row.case || ''}</td>
+                <td>${row.progress || ''}</td>
+                <td>${calculateTargetAge(row.birthdate)}</td>
+                <td>${row.name || ''}</td>
+                <td>${row.FCN || ''}</td>
+                <td>${row.Camp || ''}</td>
+                <td>${row.Block || ''}</td>
+            </tr>
+        `);
+    });
+
+    datatableInstance = $('#recordsTable').DataTable({
+        dom: 'Bfrtip',
+        pageLength: 100,
+        lengthMenu: [[100, 500, 1000, -1], ['100 rows', '500 rows', '1000 rows', 'Show All']],
+        buttons: [
+            { extend: 'pageLength', className: 'btn btn-secondary btn-sm' },
+            //{ extend: 'excelHtml5', text: 'Export View to Excel', className: 'btn btn-success btn-sm', title: 'Data_Export_2026' },//
+            { extend: 'pdfHtml5', text: 'Download View PDF', className: 'btn btn-danger btn-sm', title: 'Data_Report_2026', orientation: 'landscape', pageSize: 'A4' }
+        ]
+    });
+}
+</script>
+</body>
+</html>
